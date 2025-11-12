@@ -35,20 +35,43 @@ print("✅ Retrieved relevant context from the transcript.")
 # --- Step 6: The "Smart" Prompt Engineering Step ---
 # This is where we build a powerful, structured prompt.
 prompt_template = f"""
-You are an expert medical assistant. Your task is to generate a structured SOAP note from the provided context.
-The context is a transcript of a doctor-patient conversation.
-
-**INSTRUCTIONS:**
-- You MUST generate a note with ONLY these four sections: Subjective, Objective, Assessment, Plan.
-- Do NOT add any extra explanation or introductory sentences.
-- Base your answers STRICTLY on the information given in the context below.
+You are a highly skilled medical scribe. Your task is to meticulously create a clinical SOAP note from the provided CONTEXT.
 
 **CONTEXT FROM TRANSCRIPT:**
 ---
 {context_for_llm}
 ---
 
-**GENERATED SOAP NOTE:**
+**TASK & RULES:**
+1.  Analyze the CONTEXT and generate a SOAP note with four sections: (Subjective), (Objective), (Assessment), and (Plan).
+2.  The (Subjective) section should detail the patient's complaints and reported history, structured by body system (e.g., Eyes:, Heart:, etc.).
+3.  The (Objective) section should list the doctor's physical examination findings, starting with Vitals.
+4.  The (Assessment) section MUST list the diagnoses with their corresponding ICD-10 codes if mentioned in the context.
+5.  The (Plan) section must be structured by diagnosis, detailing the management plan for each.
+6.  The output must be professional, concise, and based STRICTLY on the information within the CONTEXT. Do not invent any information.
+7.  Do not add any introductory or concluding phrases. Start directly with "(Subjective)" and end after the plan.
+
+**EXAMPLE OUTPUT FORMAT:**
+(Subjective)
+Patient: [Patient's name if available]
+[Patient's description and primary complaint...]
+Eyes: [Details about vision...]
+Heart: [Details about heart history...]
+
+(Objective)
+On examination:
+Vitals: [Pulse, BP, Temp, etc.]
+Head: [Exam findings...]
+Eyes: [Exam findings...]
+
+(Assessment)
+[ICD-10 Code] - [Diagnosis Name]
+
+(Plan)
+[Diagnosis Name] (ICD-10: [Code])
+[Details of the plan for this diagnosis...]
+
+**START OF SOAP NOTE GENERATION:**
 """
 
 print("\n🤔 Sending the Smart Prompt to the LLM...")
