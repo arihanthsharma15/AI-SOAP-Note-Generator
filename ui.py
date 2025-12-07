@@ -1,87 +1,114 @@
-# === PART 1: IMPORTS (Zaroori Auzaar) ===
 import streamlit as st
-import requests # Yeh library humare UI ko backend se baat karne me help karegi
+import requests
 
-# === PART 2: CONFIGURATION (Basic Setup) ===
+# --- Page Configuration and Backend URL (No change) ---
+st.set_page_config(page_title="MedNotes.ai", page_icon="🩺", layout="wide")
+LOGIN_URL = "http://127.0.0.1:8000/login/"
+GENERATE_NOTE_URL = "http://127.0.0.1:8000/notes/generate/"
 
-# Set the title and icon that appear in the browser tab
-st.set_page_config(
-    page_title="AI SOAP Note Generator",
-    page_icon="🩺",
-    layout="wide" # Use the full width of the page
-)
+# --- App State Management (No change) ---
+if 'token' not in st.session_state:
+    st.session_state.token = None
+if 'soap_note' not in st.session_state:
+    st.session_state.soap_note = ""
 
-# This is the address of our FastAPI backend's "door"
-BACKEND_URL = "http://127.0.0.1:8000/generate-soap-note/"
+# --- LOGIN PAGE (No change) ---
+if st.session_state.token is None:
+    st.title("Welcome to MedNotes.ai")
+    st.header("Please Login")
+    with st.form("login_form"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        login_button = st.form_submit_button("Login")
+        if login_button:
+            if email and password:
+                with st.spinner("Authenticating..."):
+                    try:
+                        login_data = {'username': email, 'password': password}
+                        response = requests.post(LOGIN_URL, data=login_data)
+                        if response.status_code == 200:
+                            token_data = response.json()
+                            st.session_state.token = token_data['access_token']
+                            st.rerun()
+                        else:
+                            st.error(f"Login failed: {response.json().get('detail')}")
+                    except requests.exceptions.RequestException:
+                        st.error("Connection Error! Is the backend running?")
+            else:
+                st.warning("Please enter both email and password.")
 
-# A sample transcript for users to test easily
-SAMPLE_TRANSCRIPT = """Doctor: Good morning, Mr. Sharma. What brings you in today?
-Patient: Good morning, doctor. I've had this persistent cough for about two weeks now. It's mostly dry, but sometimes I get a bit of phlegm. I've also been feeling very tired and have had a low-grade fever, around 99.5 F, especially in the evenings. I checked my temperature this morning and it was 99.2 F.
-Doctor: I see. Any other symptoms? Shortness of breath, chest pain, or body aches?
-Patient: No real chest pain, thankfully. But I do feel some minor body aches all over, and I definitely get out of breath more easily than usual, like when I climb the stairs to my apartment.
-Doctor: Okay. Let me check your vitals..."""
+# =====================================================================
+# --- MAIN APPLICATION PAGE (YAHAN PE CHANGES HAIN) ---
+# =====================================================================
+else:
+    st.sidebar.title(f"👨‍⚕️ Welcome, Doctor!")
+    st.sidebar.success("You are logged in.")
+    if st.sidebar.button("Logout"):
+        st.session_state.token = None
+        st.rerun()
 
-# === PART 3: THE USER INTERFACE (The Main App) ===
+    st.title("🩺 AI SOAP Note Generator")
+    st.info("Paste a transcript below to generate a clinical SOAP note.")
 
-# Display the title on the page
-st.title("🩺 AI SOAP Note Generator")
-st.info("This app uses a local LLM (TinyLlama) and a RAG pipeline to create structured clinical notes from patient transcripts.")
+    SAMPLE_TRANSCRIPT = "Patient complains of a persistent dry cough for one week. Doctor observed a fever of 101 F. Plan is to prescribe antibiotics."
+    transcript_input = st.text_area("Patient Transcript:", value=SAMPLE_TRANSCRIPT, height=300)
 
-# Create two columns for a cleaner layout
-col1, col2 = st.columns(2)
-
-# --- The Left Column: User Input ---
-with col1:
-    st.subheader("Patient Transcript")
-    # Create a text area for the user to paste the transcript
-    transcript_input = st.text_area(
-        "Paste the Doctor-Patient Transcript Here:", 
-        value=SAMPLE_TRANSCRIPT, # Pre-fill with our sample
-        height=400
-    )
-    
-    # Create the "Generate" button
-    generate_button = st.button("Generate SOAP Note", type="primary", use_container_width=True)
-
-# --- The Right Column: AI Output ---
-with col2:
-    st.subheader("Generated SOAP Note")
-    
-    # This is where the AI's response will be displayed
-    # We use a session_state variable to "remember" the last generated note
-    if 'soap_note' not in st.session_state:
-        st.session_state.soap_note = "The generated note will appear here..."
-
-    # When the user clicks the button
-    if generate_button:
-        # Check if the user has entered any text
+    if st.button("Generate SOAP Note", type="primary", use_container_width=True):
         if transcript_input.strip():
-            # Show a "spinner" message while the AI is working
-            with st.spinner("The AI is reading the transcript and writing the note... This may take a moment."):
+            with st.spinner("AI is analyzing and generating the note..."):
                 try:
-                    # --- THIS IS THE MAGIC ---
-                    # Send the transcript to our FastAPI backend
-                    payload = {"content": transcript_input}
-                    response = requests.post(BACKEND_URL, json=payload)
-
+                    headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                    payload = {"transcript_text": transcript_input}
+                    response = requests.post(GENERATE_NOTE_URL, json=payload, headers=headers)
                     if response.status_code == 200:
-                        # If successful, get the result and store it
+                        st.balloons()
                         result = response.json()
-                        st.session_state.soap_note = result.get("soap_note", "Error: Could not parse SOAP note.")
-                        st.balloons() # A fun little celebration!
+                        st.session_state.soap_note = result.get("soap_note_content", "Error parsing note.")
                     else:
-                        # If the server returned an error
-                        error_message = f"Error from server: {response.status_code} - {response.text}"
-                        st.session_state.soap_note = error_message
-                        st.error(error_message)
-
-                except requests.exceptions.RequestException as e:
-                    # If we couldn't even connect to the server
-                    error_message = f"Connection Error! Please ensure the FastAPI backend is running. Details: {e}"
-                    st.session_state.soap_note = error_message
-                    st.error(error_message)
+                        st.error(f"Error from server: {response.status_code} - {response.text}")
+                except requests.exceptions.RequestException:
+                    st.error("Connection Error!")
         else:
-            st.warning("Please paste a transcript before generating.")
+            st.warning("Please enter a transcript.")
 
-    # Display the (new or old) SOAP note
-    st.markdown(st.session_state.soap_note)
+    st.subheader("Generated SOAP Note:")
+    
+    # --- THIS IS THE NEW, SMART FORMATTING LOGIC ---
+    if st.session_state.soap_note:
+        # We split the AI's response by the section titles
+        # This will work even if the AI misses a section
+        sections = {
+            "Subjective:": "Objective:",
+            "Objective:": "Assessment:",
+            "Assessment:": "Plan:",
+            "Plan:": None # The last section
+        }
+        
+        # Get the full text from the AI
+        note_text = st.session_state.soap_note
+
+        # Use a container for a nice border
+        with st.container(border=True):
+            for section_title, next_section_title in sections.items():
+                try:
+                    # Find the start of the current section
+                    start_index = note_text.index(section_title)
+                    
+                    # Find the start of the next section, or the end of the string
+                    if next_section_title:
+                        end_index = note_text.index(next_section_title)
+                    else:
+                        end_index = len(note_text)
+                    
+                    # Extract the content for the current section
+                    section_content = note_text[start_index + len(section_title):end_index].strip()
+
+                    # Display it with a subheader
+                    st.markdown(f"**{section_title}**")
+                    st.markdown(f"> {section_content}") # Using blockquote for nice formatting
+
+                except ValueError:
+                    # This happens if a section title is not found in the AI's response
+                    pass # We just skip it
+    else:
+        st.write("The generated note will appear here...")

@@ -1,5 +1,6 @@
 # ==============================================================================
-# main.py - Phase 2 COMPLETE: AI + Database + Security
+# main.py - FINAL VERSION FOR PHASE 2
+# AI (RAG + Chained Prompting) + Database + Security
 # ==============================================================================
 
 # --- Part 1: Imports ---
@@ -21,13 +22,14 @@ from datetime import datetime, timedelta
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
+#from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 
 print("--- Backend Server is starting up... ---")
 
 # --- Part 2: Database Configuration ---
-DATABASE_URL = "postgresql://postgres:password@localhost/soap_notes_db" # Use your own password
+DATABASE_URL = "postgresql://postgres:password@host.docker.internal/soap_notes_db"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -48,7 +50,6 @@ class Note(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     owner = relationship("User", back_populates="notes")
 
-# This line creates the tables in the database if they don't exist
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -64,10 +65,9 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/")
 
-# --- Part 5: AI Tools Initialization ---
+# --- Part 5: AI Tools Initialization (Global Objects) ---
 llm = Ollama(model="tinyllama")
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 print("✅ AI Tools Initialized.")
 
 # --- Part 6: Pydantic Schemas (The "Forms") ---
@@ -78,6 +78,7 @@ class UserCreate(BaseModel):
 class UserDisplay(BaseModel):
     id: int
     email: str
+
     class Config:
         from_attributes = True
 
@@ -91,19 +92,20 @@ class NoteCreate(BaseModel):
 class NoteDisplay(BaseModel):
     id: int
     soap_note_content: str
+
     class Config:
         from_attributes = True
 
 # --- Part 7: FastAPI App & Endpoints ---
-app = FastAPI(title="MedNotes.ai - Secure AI Platform")
+app = FastAPI(title="MedNotes.ai - RAG-Powered & Secure")
 
-# --- Security Helper Functions & Endpoints ---
+# --- Security Helper Functions & Auth Endpoints ---
 def verify_password(plain_password, hashed_password): return argon2.verify(plain_password, hashed_password)
 def create_access_token(data: dict):
-    to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode = data.copy()
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return  jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
@@ -111,8 +113,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None: raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+    except JWTError: raise credentials_exception
     user = db.query(User).filter(User.email == email).first()
     if user is None: raise credentials_exception
     return user
@@ -137,36 +138,49 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     return {"access_token": access_token, "token_type": "bearer"}
 
 # --- Main AI Endpoint ---
+
+def generate_section_with_rag(section_name: str, context: str) -> str:
+    """Helper function to generate a single, focused section of the SOAP note."""
+    prompt = f"[INST]Based ONLY on the CONTEXT, extract information for the '{section_name}' section. If no information is found, write 'Not mentioned in transcript.'. CONTEXT: {context} EXTRACTED '{section_name.upper()}' INFORMATION:[/INST]"
+    print(f"-> Generating section: {section_name}...")
+    response = llm.invoke(prompt)
+    return response.strip()
+
 @app.post("/notes/generate/", response_model=NoteDisplay, tags=["SOAP Notes"])
-def generate_and_save_soap_note(
-    note_request: NoteCreate, 
-    db: Session = Depends(get_db), 
-    current_user: User = Depends(get_current_user) # The "Lock"
-):
-    """
-    Generates a SOAP note for the logged-in user and saves it to the database.
-    """
-    # RAG Pipeline
-    vector_store = Chroma.from_texts(texts=[note_request.transcript_text], embedding=embeddings)
-    retriever = vector_store.as_retriever()
-    context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(note_request.transcript_text)])
+def generate_and_save_soap_note(note_request: NoteCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Performs a full RAG pipeline and then uses chained prompting for structured output."""
+    print(f"\n--- New RAG request from user: {current_user.email} ---")
     
-    prompt = f"[INST]As a medical scribe, create a SOAP note based on this CONTEXT:\n\n{context}\n\nSOAP NOTE:[/INST]"
-    
-    generated_note = llm.invoke(prompt)
+    try:
+        # RAG - Step 1: Ingest & Retrieve
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        docs = [Document(page_content=note_request.transcript_text)]
+        chunks = text_splitter.split_documents(docs)
+        
+        vector_store = Chroma.from_documents(documents=chunks, embedding=embeddings)
+        retriever = vector_store.as_retriever()
+        
+        context_for_llm = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(note_request.transcript_text)])
+        print("✅ Retrieved relevant context using RAG.")
 
-    # Save to Database
-    new_note = Note(
-        transcript_text=note_request.transcript_text,
-        soap_note_content=generated_note,
-        owner_id=current_user.id # Linking the note to the logged-in user
-    )
-    db.add(new_note)
-    db.commit()
-    db.refresh(new_note)
-    
-    return new_note
+        # RAG - Step 2: Chained Generation
+        subjective = generate_section_with_rag("Subjective (Patient's complaints)", context_for_llm)
+        objective = generate_section_with_rag("Objective (Doctor's observations)", context_for_llm)
+        assessment = generate_section_with_rag("Assessment (The diagnosis)", context_for_llm)
+        plan = generate_section_with_rag("Plan (The treatment)", context_for_llm)
+        
+        # Assemble the final note
+        final_soap_note = f"**Subjective:**\n{subjective}\n\n**Objective:**\n{objective}\n\n**Assessment:**\n{assessment}\n\n**Plan:**\n{plan}"
+        
+        # Save to Database
+        new_note = Note(transcript_text=note_request.transcript_text, soap_note_content=final_soap_note, owner_id=current_user.id)
+        db.add(new_note)
+        db.commit()
+        db.refresh(new_note)
+        
+        print(f"✅ Note saved to DB with ID: {new_note.id}")
+        return new_note
 
-@app.get("/", tags=["Root"])
-def read_root():
-    return {"message": "Welcome to MedNotes.ai!"}
+    except Exception as e: 
+        print(f"!!! AN ERROR OCCURRED: {e} !!!")
+        raise HTTPException(status_code=500, detail="An internal error occurred during AI processing.")

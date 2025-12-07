@@ -1,0 +1,33 @@
+services:
+  backend:
+    build: .
+    container_name: fastapi_backend_service
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "postgresql://postgres:password@db/soap_notes_db"
+    depends_on:
+      - db
+      - ollama
+
+  db:
+    image: postgres:15
+    container_name: postgres_db_service
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: soap_notes_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama_ai_service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  postgres_data:
+  ollama_data:
